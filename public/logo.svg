@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <rect width="200" height="200" fill="#0f172a"/>
+  <path d="M50 150 L100 50 L150 150 Z" fill="#4f46e5"/>
+  <text x="100" y="180" font-family="Arial" font-size="24" fill="#ffffff" text-anchor="middle">ROAMEO</text>
+</svg>
