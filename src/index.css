@@ -43,6 +43,7 @@ html {
 }
 body {
   background-color: #F5F9FA;
+  overflow-x: hidden; /* prevent sidebar slide animation from causing horizontal scroll */
 }
 
 /* scrollbar */

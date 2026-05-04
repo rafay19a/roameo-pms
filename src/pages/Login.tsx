@@ -4,9 +4,13 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../hooks/useAuth';
 import { Lock, Mail, AlertCircle } from 'lucide-react';
 
+const REMEMBER_KEY = 'roameo_remember_email';
+
 export const Login: React.FC = () => {
-  const [email, setEmail] = useState('admin@roameo.com');
-  const [password, setPassword] = useState('admin123');
+  const savedEmail = typeof window !== 'undefined' ? localStorage.getItem(REMEMBER_KEY) ?? '' : '';
+  const [email, setEmail] = useState(savedEmail);
+  const [password, setPassword] = useState('');
+  const [rememberMe, setRememberMe] = useState(savedEmail !== '');
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const navigate = useNavigate();
@@ -32,6 +36,12 @@ export const Login: React.FC = () => {
     try {
       const { error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) throw error;
+      // Persist email only — never password
+      if (rememberMe) {
+        localStorage.setItem(REMEMBER_KEY, email);
+      } else {
+        localStorage.removeItem(REMEMBER_KEY);
+      }
       navigate('/');
     } catch (err: any) {
       setError(err.message || 'Failed to login');
@@ -128,7 +138,7 @@ export const Login: React.FC = () => {
                   required
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="admin@roameo.com"
+                  placeholder="your@email.com"
                   className="w-full pl-10 pr-4 py-3 text-sm text-slate-800 rounded-xl border border-roameoBorder bg-roameoSurface placeholder-slate-400 outline-none transition-all duration-150 focus:bg-white focus:border-roameoPrimary focus:ring-2 focus:ring-roameoPrimary/20"
                 />
               </div>
@@ -156,6 +166,17 @@ export const Login: React.FC = () => {
                 />
               </div>
             </div>
+
+            {/* Remember me */}
+            <label className="flex items-center gap-2.5 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={rememberMe}
+                onChange={e => setRememberMe(e.target.checked)}
+                className="h-4 w-4 rounded border-roameoBorder text-roameoPrimary accent-roameoPrimary cursor-pointer"
+              />
+              <span className="text-sm text-slate-500">Remember my email</span>
+            </label>
 
             {/* Submit */}
             <button
