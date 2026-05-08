@@ -1,20 +1,47 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { formatCurrency, generateBookingToken } from '../lib/utils';
-import { Plus, Edit, Trash2, CalendarDays, List } from 'lucide-react';
+import { Plus, Edit, Trash2, CalendarDays, List, FileText, UtensilsCrossed, X, Minus } from 'lucide-react';
 import { RoomAvailabilityGrid } from '../components/RoomAvailabilityGrid';
+import { BookingConfirmationCard, ReceiptBooking } from '../components/BookingConfirmationCard';
+import { useToast } from '../hooks/useToast';
+import { ToastContainer } from '../components/ToastContainer';
 
 interface Booking {
   id: string;
   booking_token: string;
+  confirmed_token?: string | null;
   guest_name: string;
   guest_email: string;
+  guest_phone?: string | null;
   room_id: string;
   check_in: string;
   check_out: string;
   total_price: number;
+  advance_amount?: number | null;
   status: string;
-  rooms: { room_number: string; price: number };
+  payment_proof_url?: string | null;
+  rooms: { room_number: string; room_type: string; price: number };
+}
+
+function toReceiptBooking(b: Booking): ReceiptBooking {
+  return {
+    id: b.id,
+    booking_token: b.booking_token,
+    confirmed_token: b.confirmed_token,
+    guest_name: b.guest_name,
+    guest_phone: b.guest_phone,
+    room_id: b.room_id,
+    room_number: b.rooms?.room_number ?? '—',
+    room_type: b.rooms?.room_type ?? '—',
+    price_per_night: b.rooms?.price ?? 0,
+    check_in: b.check_in,
+    check_out: b.check_out,
+    total_price: b.total_price,
+    advance_amount: b.advance_amount,
+    status: b.status,
+    payment_proof_url: b.payment_proof_url,
+  };
 }
 
 interface Room {
@@ -23,7 +50,35 @@ interface Room {
   price: number;
 }
 
-const BookingModal = ({ booking, rooms, onClose, onSave }: { booking: Booking | null, rooms: Room[], onClose: () => void, onSave: () => void }) => {
+const ALL_STATUSES = ['Pending', 'Confirmed', 'Checked-in', 'Completed', 'Cancelled'];
+
+const STATUS_STYLES: Record<string, string> = {
+  'Pending':    'bg-slate-100 text-slate-600',
+  'Confirmed':  'bg-emerald-50 text-emerald-700',
+  'Checked-in': 'bg-amber-50 text-amber-700',
+  'Completed':  'bg-teal-50 text-teal-700',
+  'Cancelled':  'bg-red-50 text-red-600',
+};
+
+const ALLOWED_TRANSITIONS: Record<string, string[]> = {
+  'Pending':    ['Confirmed', 'Cancelled'],
+  'Confirmed':  ['Checked-in', 'Cancelled'],
+  'Checked-in': ['Completed'],
+  'Completed':  [],
+  'Cancelled':  [],
+};
+
+const BookingModal = ({
+  booking,
+  rooms,
+  onClose,
+  onSave,
+}: {
+  booking: Booking | null;
+  rooms: Room[];
+  onClose: () => void;
+  onSave: () => void;
+}) => {
   const [formData, setFormData] = useState({
     guest_name: booking?.guest_name || '',
     guest_email: booking?.guest_email || '',
@@ -33,49 +88,35 @@ const BookingModal = ({ booking, rooms, onClose, onSave }: { booking: Booking | 
     total_price: Number(booking?.total_price || 0),
     status: booking?.status || 'Confirmed',
   });
-
   const [availableRooms, setAvailableRooms] = useState<Room[]>(rooms);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (formData.check_in && formData.check_out) {
-      checkRoomAvailability();
-    } else {
-      setAvailableRooms(rooms);
-    }
+    if (formData.check_in && formData.check_out) checkRoomAvailability();
+    else setAvailableRooms(rooms);
   }, [formData.check_in, formData.check_out, rooms]);
 
   const checkRoomAvailability = async () => {
     if (!formData.check_in || !formData.check_out) return;
-
     try {
-      const { data: overlappingBookings, error } = await supabase
+      const { data: overlapping } = await supabase
         .from('bookings')
         .select('room_id')
         .or(`and(check_in.lte.${formData.check_out},check_out.gte.${formData.check_in})`);
-
-      if (error) {
-        console.error(error);
-        return;
-      }
-
-      const bookedRoomIds = overlappingBookings?.map(b => b.room_id) || [];
-      
-      const available = rooms.filter(room => 
-        !bookedRoomIds.includes(room.id) || (booking && booking.room_id === room.id)
-      );
-      
+      const bookedIds = overlapping?.map(b => b.room_id) ?? [];
+      const available = rooms.filter(r => !bookedIds.includes(r.id) || (booking && booking.room_id === r.id));
       setAvailableRooms(available);
-
       if (formData.room_id && !available.find(r => r.id === formData.room_id)) {
         setFormData(prev => ({ ...prev, room_id: '' }));
       }
-    } catch (error) {
-      console.error('Error checking availability:', error);
+    } catch (err) {
+      console.error('Error checking availability:', err);
     }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setSaving(true);
     try {
       const bookingData = {
         guest_name: formData.guest_name,
@@ -88,157 +129,375 @@ const BookingModal = ({ booking, rooms, onClose, onSave }: { booking: Booking | 
       };
 
       if (booking) {
-        const { error } = await supabase
-          .from('bookings')
-          .update(bookingData)
-          .eq('id', booking.id);
-        if (error) {
-          console.error(error);
-          return;
-        }
+        const { error } = await supabase.from('bookings').update(bookingData).eq('id', booking.id);
+        if (error) throw error;
       } else {
-        const newBookingData = {
-          ...bookingData,
-          booking_token: generateBookingToken(),
-        };
         const { error } = await supabase
           .from('bookings')
-          .insert([newBookingData]);
-        if (error) {
-          console.error(error);
-          return;
-        }
+          .insert([{ ...bookingData, booking_token: generateBookingToken() }]);
+        if (error) throw error;
       }
-
       onSave();
-    } catch (error) {
-      console.error('Error saving booking:', error);
+    } catch (err) {
+      console.error('Error saving booking:', err);
+    } finally {
+      setSaving(false);
     }
   };
 
   return (
-    <div className="fixed inset-0 z-10 overflow-y-auto">
-      <div className="flex min-h-screen items-end justify-center px-4 pt-4 pb-20 text-center sm:block sm:p-0">
-        <div className="fixed inset-0 bg-slate-500 bg-opacity-75 transition-opacity" onClick={onClose}></div>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: 'rgba(15,23,42,0.55)', backdropFilter: 'blur(6px)' }}
+    >
+      <div
+        className="bg-white rounded-2xl w-full max-w-2xl shadow-2xl"
+        style={{ border: '1px solid rgba(212,230,234,0.9)' }}
+      >
+        <div
+          className="flex items-center justify-between px-6 pt-6 pb-5"
+          style={{ borderBottom: '1px solid #F1F5F9' }}
+        >
+          <h3 className="text-[17px] font-bold text-slate-800 tracking-tight">
+            {booking ? 'Edit Booking' : 'New Booking'}
+          </h3>
+          <button
+            onClick={onClose}
+            className="h-8 w-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors"
+          >
+            ✕
+          </button>
+        </div>
 
-        <span className="hidden sm:inline-block sm:h-screen sm:align-middle" aria-hidden="true">&#8203;</span>
+        <form onSubmit={handleSubmit} className="px-6 py-5">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">
+                Guest Name *
+              </label>
+              <input
+                type="text"
+                required
+                value={formData.guest_name}
+                onChange={e => setFormData({ ...formData, guest_name: e.target.value })}
+                className="w-full px-3.5 py-2.5 text-sm text-slate-800 bg-roameoSurface border border-roameoBorder rounded-xl outline-none transition-all focus:bg-white focus:border-roameoPrimary focus:ring-2 focus:ring-roameoPrimary/20"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">
+                Guest Email
+              </label>
+              <input
+                type="email"
+                value={formData.guest_email}
+                onChange={e => setFormData({ ...formData, guest_email: e.target.value })}
+                className="w-full px-3.5 py-2.5 text-sm text-slate-800 bg-roameoSurface border border-roameoBorder rounded-xl outline-none transition-all focus:bg-white focus:border-roameoPrimary focus:ring-2 focus:ring-roameoPrimary/20"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">
+                Check In *
+              </label>
+              <input
+                type="date"
+                required
+                value={formData.check_in}
+                onChange={e => setFormData({ ...formData, check_in: e.target.value })}
+                className="w-full px-3.5 py-2.5 text-sm text-slate-800 bg-roameoSurface border border-roameoBorder rounded-xl outline-none transition-all focus:bg-white focus:border-roameoPrimary"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">
+                Check Out *
+              </label>
+              <input
+                type="date"
+                required
+                value={formData.check_out}
+                onChange={e => setFormData({ ...formData, check_out: e.target.value })}
+                className="w-full px-3.5 py-2.5 text-sm text-slate-800 bg-roameoSurface border border-roameoBorder rounded-xl outline-none transition-all focus:bg-white focus:border-roameoPrimary"
+              />
+            </div>
+            <div className="sm:col-span-2">
+              <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">
+                Room *
+              </label>
+              <select
+                required
+                value={formData.room_id}
+                onChange={e => setFormData({ ...formData, room_id: e.target.value })}
+                className="w-full px-3.5 py-2.5 text-sm text-slate-800 bg-roameoSurface border border-roameoBorder rounded-xl outline-none transition-all focus:bg-white focus:border-roameoPrimary"
+              >
+                <option value="">Select a room</option>
+                {availableRooms.map(room => (
+                  <option key={room.id} value={room.id}>
+                    {room.room_number} — {formatCurrency(room.price)}/night
+                  </option>
+                ))}
+              </select>
+              {(!formData.check_in || !formData.check_out) && (
+                <p className="mt-1 text-xs text-slate-400">Select dates first to see available rooms.</p>
+              )}
+            </div>
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">
+                Total Price
+              </label>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={formData.total_price ?? 0}
+                onChange={e => setFormData({ ...formData, total_price: Number(e.target.value) })}
+                className="w-full px-3.5 py-2.5 text-sm text-slate-800 bg-roameoSurface border border-roameoBorder rounded-xl outline-none transition-all focus:bg-white focus:border-roameoPrimary"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">
+                Status
+              </label>
+              <select
+                value={formData.status}
+                onChange={e => setFormData({ ...formData, status: e.target.value })}
+                className="w-full px-3.5 py-2.5 text-sm text-slate-800 bg-roameoSurface border border-roameoBorder rounded-xl outline-none transition-all focus:bg-white focus:border-roameoPrimary"
+              >
+                {ALL_STATUSES.map(s => <option key={s}>{s}</option>)}
+              </select>
+            </div>
+          </div>
 
-        <div className="inline-block transform overflow-hidden rounded-lg bg-white px-4 pt-5 pb-4 text-left align-bottom shadow-xl transition-all sm:my-8 sm:w-full sm:max-w-2xl sm:p-6 sm:align-middle">
-          <div>
-            <h3 className="text-lg font-medium leading-6 text-slate-900">
-              {booking ? 'Edit Booking' : 'New Booking'}
-            </h3>
-            <form onSubmit={handleSubmit} className="mt-5 space-y-4">
-              <div className="grid grid-cols-1 gap-y-6 gap-x-4 sm:grid-cols-2">
-                <div>
-                  <label className="block text-sm font-medium text-slate-700">Guest Name</label>
-                  <input
-                    type="text"
-                    required
-                    value={formData.guest_name}
-                    onChange={(e) => setFormData({...formData, guest_name: e.target.value})}
-                    className="mt-1 block w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border py-2 px-3"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-700">Guest Email</label>
-                  <input
-                    type="email"
-                    value={formData.guest_email}
-                    onChange={(e) => setFormData({...formData, guest_email: e.target.value})}
-                    className="mt-1 block w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border py-2 px-3"
-                  />
-                </div>
-                
-                <div>
-                  <label className="block text-sm font-medium text-slate-700">Check In</label>
-                  <input
-                    type="date"
-                    required
-                    value={formData.check_in}
-                    onChange={(e) => setFormData({...formData, check_in: e.target.value})}
-                    className="mt-1 block w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border py-2 px-3"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-700">Check Out</label>
-                  <input
-                    type="date"
-                    required
-                    value={formData.check_out}
-                    onChange={(e) => setFormData({...formData, check_out: e.target.value})}
-                    className="mt-1 block w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border py-2 px-3"
-                  />
-                </div>
+          <div className="flex gap-3 mt-6">
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 py-2.5 text-sm font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={saving}
+              className="flex-1 py-2.5 text-sm font-semibold text-white rounded-xl transition-all active:scale-[0.98] disabled:opacity-60"
+              style={{ background: 'linear-gradient(135deg, #6F8F97 0%, #4F6F76 100%)', boxShadow: '0 4px 14px rgba(79,111,118,0.30)' }}
+            >
+              {saving ? 'Saving…' : 'Save Booking'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
 
-                <div className="sm:col-span-2">
-                  <label className="block text-sm font-medium text-slate-700">Room</label>
-                  <select
-                    required
-                    value={formData.room_id}
-                    onChange={(e) => setFormData({...formData, room_id: e.target.value})}
-                    className="mt-1 block w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border py-2 px-3"
-                  >
-                    <option value="">Select a room</option>
-                    {availableRooms && availableRooms.map(room => (
-                      <option key={room.id} value={room.id}>
-                        {room.room_number} - {formatCurrency(room.price)}/night
-                      </option>
-                    ))}
-                  </select>
-                  {(!formData.check_in || !formData.check_out) && (
-                    <p className="mt-1 text-xs text-slate-500">Please select dates to see available rooms.</p>
-                  )}
-                </div>
+// ─── AddMenuModal ─────────────────────────────────────────────────────────────
 
-                <div>
-                  <label className="block text-sm font-medium text-slate-700">Total Price</label>
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={formData.total_price ?? 0}
-                    onChange={(e) => setFormData({...formData, total_price: Number(e.target.value)})}
-                    className="mt-1 block w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border py-2 px-3"
-                  />
-                </div>
+interface MenuItemRow { id: string; name: string; price: number; category: string; }
 
-                <div>
-                  <label className="block text-sm font-medium text-slate-700">Status</label>
-                  <select
-                    value={formData.status}
-                    onChange={(e) => setFormData({...formData, status: e.target.value})}
-                    className="mt-1 block w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border py-2 px-3"
-                  >
-                    <option value="Confirmed">Confirmed</option>
-                    <option value="Pending">Pending</option>
-                    <option value="Cancelled">Cancelled</option>
-                  </select>
+const INPUT_CLS = 'block w-full rounded-lg border border-roameoBorder bg-white px-3 py-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-roameoAccent/40 focus:border-roameoAccent transition';
+
+const AddMenuModal: React.FC<{
+  bookingId: string;
+  onClose: () => void;
+  showToast: (msg: string, type?: 'success' | 'error') => void;
+}> = ({ bookingId, onClose, showToast }) => {
+  const [menuItems, setMenuItems] = useState<MenuItemRow[]>([]);
+  const [quantities, setQuantities] = useState<Record<string, number>>({});
+  const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    supabase.from('menu_items').select('*').order('category').order('name')
+      .then(({ data }) => { setMenuItems(data ?? []); setLoading(false); });
+  }, []);
+
+  const grouped = useMemo(() => {
+    const map: Record<string, MenuItemRow[]> = {};
+    for (const item of menuItems) {
+      if (!map[item.category]) map[item.category] = [];
+      map[item.category].push(item);
+    }
+    return map;
+  }, [menuItems]);
+
+  const setQty = (id: string, val: number) =>
+    setQuantities(prev => ({ ...prev, [id]: Math.max(0, val) }));
+
+  const total = menuItems.reduce((s, item) => s + (quantities[item.id] ?? 0) * item.price, 0);
+  const hasItems = Object.values(quantities).some(q => q > 0);
+
+  const handleSave = async () => {
+    if (!bookingId) {
+      showToast('Invalid booking ID', 'error');
+      return;
+    }
+
+    console.log('Booking ID:', bookingId);
+
+    const payload = menuItems
+      .filter(item => (quantities[item.id] ?? 0) > 0)
+      .map(item => ({
+        booking_id: bookingId,
+        menu_item_id: item.id,
+        quantity: quantities[item.id],
+        price: item.price,
+      }));
+
+    if (payload.length === 0) {
+      showToast('No items selected', 'error');
+      return;
+    }
+
+    console.log('Selected items:', payload);
+
+    setSaving(true);
+    try {
+      const { data, error } = await supabase
+        .from('booking_items')
+        .insert(payload)
+        .select();
+
+      if (error) {
+        console.error('INSERT ERROR:', error);
+        showToast(error.message, 'error');
+        throw error;
+      }
+
+      console.log('Inserted items:', data);
+
+      // Re-read ALL booking_items for this booking, then recalculate total
+      const { data: allItems } = await supabase
+        .from('booking_items')
+        .select('quantity, price')
+        .eq('booking_id', bookingId);
+
+      const menuTotal = (allItems ?? []).reduce(
+        (sum: number, i: { quantity: number; price: number }) => sum + i.quantity * i.price,
+        0,
+      );
+
+      const { data: booking } = await supabase
+        .from('bookings')
+        .select('total_price')
+        .eq('id', bookingId)
+        .single();
+
+      if (booking) {
+        await supabase
+          .from('bookings')
+          .update({ total_price: Number(booking.total_price ?? 0) + menuTotal })
+          .eq('id', bookingId);
+      }
+
+      showToast('Menu items added to booking');
+      onClose();
+    } catch (err: any) {
+      console.error('Error adding menu items:', err);
+      showToast(err.message || 'Insert failed', 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" onClick={onClose} />
+      <div
+        className="relative w-full max-w-md bg-white rounded-2xl overflow-hidden flex flex-col"
+        style={{ boxShadow: '0 20px 60px rgba(0,0,0,0.15)', maxHeight: '85vh' }}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: '1px solid #F1F5F9' }}>
+          <h3 className="text-base font-semibold text-slate-800 flex items-center gap-2">
+            <UtensilsCrossed className="h-4 w-4 text-roameoAccent" /> Add Room Service
+          </h3>
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400 transition">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5">
+          {loading ? (
+            <div className="flex items-center justify-center h-24">
+              <div className="h-7 w-7 rounded-full border-2 border-roameoPrimary" style={{ borderTopColor: 'transparent', animation: 'spin-ring 0.75s linear infinite' }} />
+            </div>
+          ) : menuItems.length === 0 ? (
+            <p className="text-center text-sm text-slate-400 py-8">No menu items configured yet.</p>
+          ) : (
+            Object.keys(grouped).sort().map(cat => (
+              <div key={cat}>
+                <p className="text-xs font-bold text-roameoMuted uppercase tracking-widest mb-2">{cat}</p>
+                <div className="space-y-2">
+                  {grouped[cat].map(item => {
+                    const qty = quantities[item.id] ?? 0;
+                    return (
+                      <div key={item.id} className="flex items-center gap-3 rounded-xl px-3 py-2.5" style={{ background: qty > 0 ? '#F0FDF9' : '#F8FAFC', border: `1px solid ${qty > 0 ? '#A7F3D0' : '#F1F5F9'}` }}>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-slate-700 truncate">{item.name}</p>
+                          <p className="text-xs text-slate-400">{formatCurrency(item.price)}</p>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            onClick={() => setQty(item.id, qty - 1)}
+                            disabled={qty === 0}
+                            className="h-7 w-7 rounded-lg flex items-center justify-center text-slate-500 hover:bg-roameoBorder transition disabled:opacity-30"
+                          >
+                            <Minus className="h-3 w-3" />
+                          </button>
+                          <input
+                            type="number"
+                            min="0"
+                            value={qty}
+                            onChange={e => setQty(item.id, Number(e.target.value))}
+                            className={INPUT_CLS + ' w-14 text-center py-1 text-sm font-semibold'}
+                          />
+                          <button
+                            onClick={() => setQty(item.id, qty + 1)}
+                            className="h-7 w-7 rounded-lg flex items-center justify-center text-slate-500 hover:bg-roameoBorder transition"
+                          >
+                            <Plus className="h-3 w-3" />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
+            ))
+          )}
+        </div>
 
-              <div className="mt-5 sm:mt-6 sm:grid sm:grid-flow-row-dense sm:grid-cols-2 sm:gap-3">
-                <button
-                  type="submit"
-                  className="inline-flex w-full justify-center rounded-md border border-transparent bg-indigo-600 px-4 py-2 text-base font-medium text-white shadow-sm hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 sm:col-start-2 sm:text-sm"
-                >
-                  Save Booking
-                </button>
-                <button
-                  type="button"
-                  onClick={onClose}
-                  className="mt-3 inline-flex w-full justify-center rounded-md border border-slate-300 bg-white px-4 py-2 text-base font-medium text-slate-700 shadow-sm hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 sm:col-start-1 sm:mt-0 sm:text-sm"
-                >
-                  Cancel
-                </button>
-              </div>
-            </form>
+        {/* Footer */}
+        <div className="px-5 py-4 space-y-3" style={{ borderTop: '1px solid #F1F5F9' }}>
+          {total > 0 && (
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-slate-500">Total to add</span>
+              <span className="font-bold text-roameoAccent">{formatCurrency(total)}</span>
+            </div>
+          )}
+          <div className="flex gap-3">
+            <button
+              onClick={handleSave}
+              disabled={saving || !hasItems}
+              className="flex-1 py-2.5 rounded-xl text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
+              style={{ background: 'linear-gradient(135deg, #6F8F97 0%, #4F6F76 100%)' }}
+            >
+              {saving ? 'Saving…' : 'Add to Booking'}
+            </button>
+            <button
+              onClick={onClose}
+              className="flex-1 py-2.5 rounded-xl border border-roameoBorder text-sm font-semibold text-slate-600 hover:bg-roameoSurface transition"
+            >
+              Cancel
+            </button>
           </div>
         </div>
       </div>
     </div>
   );
 };
+
+// ─── Main Bookings Page ───────────────────────────────────────────────────────
 
 export const Bookings: React.FC = () => {
   const [view, setView] = useState<'availability' | 'list'>('availability');
@@ -247,38 +506,22 @@ export const Bookings: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [editingBooking, setEditingBooking] = useState<Booking | null>(null);
+  const [viewingReceipt, setViewingReceipt] = useState<ReceiptBooking | null>(null);
+  const [addMenuBookingId, setAddMenuBookingId] = useState<string | null>(null);
+  const { toasts, showToast } = useToast();
 
-  useEffect(() => {
-    fetchBookings();
-    fetchRooms();
-  }, []);
+  useEffect(() => { fetchBookings(); fetchRooms(); }, []);
 
   const fetchBookings = async () => {
     try {
       const { data, error } = await supabase
         .from('bookings')
-        .select(`
-          *,
-          rooms (
-            id,
-            room_number,
-            price
-          )
-        `)
+        .select(`*, rooms (id, room_number, room_type, price)`)
         .order('created_at', { ascending: false });
-      
-      if (error) {
-        console.error(error);
-        setBookings([]);
-        return;
-      }
-      if (!data) {
-        setBookings([]);
-        return;
-      }
-      setBookings(data);
-    } catch (error) {
-      console.error('Error fetching bookings:', error);
+      if (error) throw error;
+      setBookings(data ?? []);
+    } catch (err) {
+      console.error('Error fetching bookings:', err);
       setBookings([]);
     } finally {
       setLoading(false);
@@ -287,47 +530,53 @@ export const Bookings: React.FC = () => {
 
   const fetchRooms = async () => {
     try {
-      const { data, error } = await supabase
-        .from('rooms')
-        .select('id, room_number, price')
-        .eq('status', 'Available');
-      
-      if (error) {
-        console.error(error);
-        setRooms([]);
-        return;
-      }
-      setRooms(data || []);
-    } catch (error) {
-      console.error('Error fetching rooms:', error);
-      setRooms([]);
+      const { data } = await supabase.from('rooms').select('id, room_number, price').eq('status', 'Available');
+      setRooms(data ?? []);
+    } catch (err) {
+      console.error('Error fetching rooms:', err);
+    }
+  };
+
+  // ── Inline status change with optimistic update ───────────────────────────────
+  const handleStatusChange = async (id: string, newStatus: string) => {
+    // Optimistic update
+    setBookings(prev => prev.map(b => b.id === id ? { ...b, status: newStatus } : b));
+    try {
+      const { error } = await supabase
+        .from('bookings')
+        .update({ status: newStatus })
+        .eq('id', id);
+      if (error) throw error;
+      showToast('Status updated');
+    } catch (err: any) {
+      // Revert on failure
+      fetchBookings();
+      showToast(err.message || 'Failed to update status', 'error');
     }
   };
 
   const handleDelete = async (id: string) => {
     if (!window.confirm('Are you sure you want to delete this booking?')) return;
-    
     try {
-      const { error } = await supabase
-        .from('bookings')
-        .delete()
-        .eq('id', id);
-      
-      if (error) {
-        console.error(error);
-        return;
-      }
-      fetchBookings();
-    } catch (error) {
-      console.error('Error deleting booking:', error);
+      const { error } = await supabase.from('bookings').delete().eq('id', id);
+      if (error) throw error;
+      setBookings(prev => prev.filter(b => b.id !== id));
+      showToast('Booking deleted');
+    } catch (err: any) {
+      showToast(err.message || 'Failed to delete booking', 'error');
     }
   };
 
-  if (loading) return (
-    <div className="flex items-center justify-center h-48">
-      <div className="h-8 w-8 rounded-full border-2 border-roameoPrimary" style={{ borderTopColor: 'transparent', animation: 'spin-ring 0.75s linear infinite' }} />
-    </div>
-  );
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-48">
+        <div
+          className="h-8 w-8 rounded-full border-2 border-roameoPrimary"
+          style={{ borderTopColor: 'transparent', animation: 'spin-ring 0.75s linear infinite' }}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -372,7 +621,6 @@ export const Bookings: React.FC = () => {
             </button>
           </div>
 
-          {/* New booking button — only shown in list view */}
           {view === 'list' && (
             <button
               onClick={() => { setEditingBooking(null); setShowModal(true); }}
@@ -386,7 +634,7 @@ export const Bookings: React.FC = () => {
         </div>
       </div>
 
-      {/* ── Availability grid view ── */}
+      {/* ── Availability grid ── */}
       {view === 'availability' && <RoomAvailabilityGrid />}
 
       {/* ── List view ── */}
@@ -398,84 +646,111 @@ export const Bookings: React.FC = () => {
             border: '1px solid rgba(212,230,234,0.6)',
           }}
         >
-          <table className="min-w-full divide-y divide-slate-100">
-            <thead>
-              <tr className="bg-roameoSurface">
-                <th className="py-3.5 pl-5 pr-3 text-left text-xs font-bold text-slate-500 uppercase tracking-wider">
-                  Token / Guest
-                </th>
-                <th className="px-4 py-3.5 text-left text-xs font-bold text-slate-500 uppercase tracking-wider">
-                  Room
-                </th>
-                <th className="px-4 py-3.5 text-left text-xs font-bold text-slate-500 uppercase tracking-wider">
-                  Dates
-                </th>
-                <th className="px-4 py-3.5 text-left text-xs font-bold text-slate-500 uppercase tracking-wider">
-                  Total
-                </th>
-                <th className="px-4 py-3.5 text-left text-xs font-bold text-slate-500 uppercase tracking-wider">
-                  Status
-                </th>
-                <th className="relative py-3.5 pl-3 pr-5">
-                  <span className="sr-only">Actions</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-50">
-              {bookings.map(booking => (
-                <tr key={booking.id} className="hover:bg-roameoSurface/50 transition-colors">
-                  <td className="whitespace-nowrap py-4 pl-5 pr-3 text-sm">
-                    <div className="font-semibold text-slate-800">{booking.booking_token}</div>
-                    <div className="text-slate-400 text-xs mt-0.5">{booking.guest_name}</div>
-                  </td>
-                  <td className="whitespace-nowrap px-4 py-4 text-sm font-medium text-slate-700">
-                    {booking.rooms?.room_number}
-                  </td>
-                  <td className="whitespace-nowrap px-4 py-4 text-sm text-slate-500">
-                    <div className="text-xs">In: <span className="font-medium text-slate-700">{booking.check_in}</span></div>
-                    <div className="text-xs mt-0.5">Out: <span className="font-medium text-slate-700">{booking.check_out}</span></div>
-                  </td>
-                  <td className="whitespace-nowrap px-4 py-4 text-sm font-semibold text-slate-700">
-                    {formatCurrency(booking.total_price)}
-                  </td>
-                  <td className="whitespace-nowrap px-4 py-4 text-sm">
-                    <span
-                      className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ${
-                        booking.status === 'Confirmed'
-                          ? 'bg-emerald-50 text-emerald-700'
-                          : booking.status === 'Cancelled'
-                          ? 'bg-red-50 text-red-600'
-                          : 'bg-amber-50 text-amber-700'
-                      }`}
-                    >
-                      {booking.status}
-                    </span>
-                  </td>
-                  <td className="whitespace-nowrap py-4 pl-3 pr-5 text-right text-sm">
-                    <button
-                      onClick={() => { setEditingBooking(booking); setShowModal(true); }}
-                      className="text-roameoMuted hover:text-roameoAccent mr-3 transition-colors"
-                    >
-                      <Edit className="h-4 w-4" />
-                    </button>
-                    <button
-                      onClick={() => handleDelete(booking.id)}
-                      className="text-slate-300 hover:text-red-500 transition-colors"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </button>
-                  </td>
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-slate-100">
+              <thead>
+                <tr className="bg-roameoSurface">
+                  <th className="py-3.5 pl-5 pr-3 text-left text-xs font-bold text-slate-500 uppercase tracking-wider">
+                    Token / Guest
+                  </th>
+                  <th className="px-4 py-3.5 text-left text-xs font-bold text-slate-500 uppercase tracking-wider">
+                    Room
+                  </th>
+                  <th className="px-4 py-3.5 text-left text-xs font-bold text-slate-500 uppercase tracking-wider">
+                    Dates
+                  </th>
+                  <th className="px-4 py-3.5 text-left text-xs font-bold text-slate-500 uppercase tracking-wider">
+                    Total
+                  </th>
+                  <th className="px-4 py-3.5 text-left text-xs font-bold text-slate-500 uppercase tracking-wider">
+                    Status
+                  </th>
+                  <th className="relative py-3.5 pl-3 pr-5">
+                    <span className="sr-only">Actions</span>
+                  </th>
                 </tr>
-              ))}
-              {bookings.length === 0 && (
-                <tr>
-                  <td colSpan={6} className="py-12 text-center text-sm text-slate-400">
-                    No bookings yet. Use the Availability grid to make a booking.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+              </thead>
+              <tbody className="divide-y divide-slate-50">
+                {bookings.map(booking => (
+                  <tr key={booking.id} className="hover:bg-roameoSurface/50 transition-colors">
+                    <td className="whitespace-nowrap py-4 pl-5 pr-3 text-sm">
+                      <div className="font-semibold text-slate-800">{booking.booking_token}</div>
+                      <div className="text-slate-400 text-xs mt-0.5">{booking.guest_name}</div>
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-4 text-sm font-medium text-slate-700">
+                      {booking.rooms?.room_number}
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-4 text-sm text-slate-500">
+                      <div className="text-xs">In: <span className="font-medium text-slate-700">{booking.check_in}</span></div>
+                      <div className="text-xs mt-0.5">Out: <span className="font-medium text-slate-700">{booking.check_out}</span></div>
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-4 text-sm font-semibold text-slate-700">
+                      {formatCurrency(booking.total_price)}
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-4 text-sm">
+                      {/* Only show current status + allowed next statuses */}
+                      {(() => {
+                        const allowed = ALLOWED_TRANSITIONS[booking.status] ?? [];
+                        const terminal = allowed.length === 0;
+                        return terminal ? (
+                          <span className={`inline-flex px-2.5 py-1 rounded-full text-xs font-semibold ${STATUS_STYLES[booking.status] ?? 'bg-slate-100 text-slate-600'}`}>
+                            {booking.status}
+                          </span>
+                        ) : (
+                          <select
+                            value={booking.status}
+                            onChange={e => handleStatusChange(booking.id, e.target.value)}
+                            className={`text-xs font-semibold rounded-full px-2.5 py-1 border-0 outline-none cursor-pointer appearance-none transition-colors ${
+                              STATUS_STYLES[booking.status] ?? 'bg-slate-100 text-slate-600'
+                            }`}
+                            style={{ minHeight: 28 }}
+                          >
+                            <option value={booking.status}>{booking.status}</option>
+                            {allowed.map(s => <option key={s} value={s}>{s}</option>)}
+                          </select>
+                        );
+                      })()}
+                    </td>
+                    <td className="whitespace-nowrap py-4 pl-3 pr-5 text-right text-sm">
+                      <button
+                        onClick={() => setViewingReceipt(toReceiptBooking(booking))}
+                        title="View Receipt"
+                        className="text-roameoMuted hover:text-roameoAccent mr-3 transition-colors"
+                      >
+                        <FileText className="h-4 w-4" />
+                      </button>
+                      <button
+                        onClick={() => setAddMenuBookingId(booking.id)}
+                        title="Add Room Service"
+                        className="text-roameoMuted hover:text-roameoAccent mr-3 transition-colors"
+                      >
+                        <UtensilsCrossed className="h-4 w-4" />
+                      </button>
+                      <button
+                        onClick={() => { setEditingBooking(booking); setShowModal(true); }}
+                        className="text-roameoMuted hover:text-roameoAccent mr-3 transition-colors"
+                      >
+                        <Edit className="h-4 w-4" />
+                      </button>
+                      <button
+                        onClick={() => handleDelete(booking.id)}
+                        className="text-slate-300 hover:text-red-500 transition-colors"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+                {bookings.length === 0 && (
+                  <tr>
+                    <td colSpan={6} className="py-12 text-center text-sm text-slate-400">
+                      No bookings yet. Use the Availability grid to make a booking.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
@@ -484,10 +759,42 @@ export const Bookings: React.FC = () => {
           booking={editingBooking}
           rooms={rooms}
           onClose={() => setShowModal(false)}
-          onSave={() => { setShowModal(false); fetchBookings(); }}
+          onSave={() => {
+            setShowModal(false);
+            showToast(editingBooking ? 'Booking updated' : 'Booking created');
+            fetchBookings();
+          }}
         />
       )}
+
+      {viewingReceipt && (
+        <BookingConfirmationCard
+          booking={viewingReceipt}
+          onClose={() => setViewingReceipt(null)}
+          onStatusChange={(id, status, confirmed_token) => {
+            setBookings(prev =>
+              prev.map(b =>
+                b.id === id
+                  ? { ...b, status, confirmed_token: confirmed_token ?? b.confirmed_token }
+                  : b,
+              ),
+            );
+            setViewingReceipt(prev =>
+              prev ? { ...prev, status, confirmed_token: confirmed_token ?? prev.confirmed_token } : prev,
+            );
+          }}
+        />
+      )}
+
+      {addMenuBookingId && (
+        <AddMenuModal
+          bookingId={addMenuBookingId}
+          onClose={() => { setAddMenuBookingId(null); fetchBookings(); }}
+          showToast={showToast}
+        />
+      )}
+
+      <ToastContainer toasts={toasts} />
     </div>
   );
 };
-

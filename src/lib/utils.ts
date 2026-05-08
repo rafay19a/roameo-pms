@@ -15,8 +15,7 @@ export function generateBookingToken() {
 }
 
 export function formatCurrency(amount: number) {
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
+  return 'Rs ' + new Intl.NumberFormat('en-PK', {
+    maximumFractionDigits: 0,
   }).format(amount);
 }

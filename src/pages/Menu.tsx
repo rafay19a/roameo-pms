@@ -1,7 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { formatCurrency } from '../lib/utils';
-import { Plus, Edit, Trash2 } from 'lucide-react';
+import { Plus, Edit2, Trash2, UtensilsCrossed } from 'lucide-react';
+import { useToast } from '../hooks/useToast';
+import { ToastContainer } from '../components/ToastContainer';
 
 interface MenuItem {
   id: string;
@@ -10,130 +12,143 @@ interface MenuItem {
   category: string;
 }
 
-const MenuModal = ({ item, onClose, onSave }: { item: MenuItem | null, onClose: () => void, onSave: () => void }) => {
-  const [formData, setFormData] = useState({
-    name: item?.name || '',
-    price: Number(item?.price || 0),
-    category: item?.category || 'Food',
+const TEAL_BTN: React.CSSProperties = {
+  background: 'linear-gradient(135deg, #6F8F97 0%, #4F6F76 100%)',
+};
+
+const INPUT_CLS = 'block w-full rounded-lg border border-roameoBorder bg-white px-3 py-2 text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-roameoAccent/40 focus:border-roameoAccent transition';
+
+const CATEGORY_COLORS: Record<string, { bg: string; text: string; dot: string }> = {
+  Food:     { bg: 'bg-amber-50',    text: 'text-amber-700',   dot: '#F59E0B' },
+  Beverage: { bg: 'bg-blue-50',     text: 'text-blue-700',    dot: '#3B82F6' },
+  Dessert:  { bg: 'bg-pink-50',     text: 'text-pink-700',    dot: '#EC4899' },
+  Other:    { bg: 'bg-slate-50',    text: 'text-slate-600',   dot: '#64748B' },
+};
+
+const categoryStyle = (cat: string) =>
+  CATEGORY_COLORS[cat] ?? CATEGORY_COLORS['Other'];
+
+// ─── MenuModal ────────────────────────────────────────────────────────────────
+
+interface MenuModalProps {
+  item: MenuItem | null;
+  onClose: () => void;
+  onSave: (msg: string) => void;
+}
+
+const MenuModal: React.FC<MenuModalProps> = ({ item, onClose, onSave }) => {
+  const [form, setForm] = useState({
+    name:     item?.name     ?? '',
+    price:    item?.price    ?? 0,
+    category: item?.category ?? 'Food',
   });
+  const [saving, setSaving] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!form.name.trim()) return;
+    setSaving(true);
     try {
-      const itemData = {
-        name: formData.name,
-        category: formData.category,
-        price: Number(formData.price),
-      };
-
+      const payload = { name: form.name.trim(), category: form.category, price: Number(form.price) };
       if (item) {
-        const { error } = await supabase
-          .from('menu_items')
-          .update(itemData)
-          .eq('id', item.id);
-        if (error) {
-          console.error(error);
-          return;
-        }
+        const { error } = await supabase.from('menu_items').update(payload).eq('id', item.id);
+        if (error) throw error;
+        onSave('Menu item updated');
       } else {
-        const { error } = await supabase
-          .from('menu_items')
-          .insert([itemData]);
-        if (error) {
-          console.error(error);
-          return;
-        }
+        const { error } = await supabase.from('menu_items').insert([payload]);
+        if (error) throw error;
+        onSave('Menu item added');
       }
-
-      onSave();
-    } catch (error) {
-      console.error('Error saving menu item:', error);
+    } catch (err: any) {
+      console.error('Error saving menu item:', err);
+    } finally {
+      setSaving(false);
     }
   };
 
   return (
-    <div className="fixed inset-0 z-10 overflow-y-auto">
-      <div className="flex min-h-screen items-end justify-center px-4 pt-4 pb-20 text-center sm:block sm:p-0">
-        <div className="fixed inset-0 bg-slate-500 bg-opacity-75 transition-opacity" onClick={onClose}></div>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" onClick={onClose} />
+      <div
+        className="relative w-full max-w-md rounded-2xl bg-white p-6"
+        style={{ boxShadow: '0 20px 60px rgba(0,0,0,0.15)' }}
+      >
+        <h3 className="text-lg font-semibold text-slate-800 mb-5">
+          {item ? 'Edit Menu Item' : 'Add Menu Item'}
+        </h3>
 
-        <span className="hidden sm:inline-block sm:h-screen sm:align-middle" aria-hidden="true">&#8203;</span>
-
-        <div className="inline-block transform overflow-hidden rounded-lg bg-white px-4 pt-5 pb-4 text-left align-bottom shadow-xl transition-all sm:my-8 sm:w-full sm:max-w-lg sm:p-6 sm:align-middle">
+        <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <h3 className="text-lg font-medium leading-6 text-slate-900">
-              {item ? 'Edit Menu Item' : 'Add Menu Item'}
-            </h3>
-            <form onSubmit={handleSubmit} className="mt-5 space-y-4">
-              <div>
-                <label htmlFor="name" className="block text-sm font-medium text-slate-700">Name</label>
-                <input
-                  type="text"
-                  id="name"
-                  required
-                  value={formData.name}
-                  onChange={(e) => setFormData({...formData, name: e.target.value})}
-                  className="mt-1 block w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border py-2 px-3"
-                />
-              </div>
-              <div>
-                <label htmlFor="category" className="block text-sm font-medium text-slate-700">Category</label>
-                <select
-                  id="category"
-                  value={formData.category}
-                  onChange={(e) => setFormData({...formData, category: e.target.value})}
-                  className="mt-1 block w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border py-2 px-3"
-                >
-                  <option>Food</option>
-                  <option>Beverage</option>
-                  <option>Dessert</option>
-                  <option>Other</option>
-                </select>
-              </div>
-              <div>
-                <label htmlFor="price" className="block text-sm font-medium text-slate-700">Price</label>
-                <input
-                  type="number"
-                  id="price"
-                  required
-                  min="0"
-                  step="0.01"
-                  value={formData.price ?? 0}
-                  onChange={(e) => setFormData({...formData, price: Number(e.target.value)})}
-                  className="mt-1 block w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border py-2 px-3"
-                />
-              </div>
-              <div className="mt-5 sm:mt-6 sm:grid sm:grid-flow-row-dense sm:grid-cols-2 sm:gap-3">
-                <button
-                  type="submit"
-                  className="inline-flex w-full justify-center rounded-md border border-transparent bg-indigo-600 px-4 py-2 text-base font-medium text-white shadow-sm hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 sm:col-start-2 sm:text-sm"
-                >
-                  Save
-                </button>
-                <button
-                  type="button"
-                  onClick={onClose}
-                  className="mt-3 inline-flex w-full justify-center rounded-md border border-slate-300 bg-white px-4 py-2 text-base font-medium text-slate-700 shadow-sm hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 sm:col-start-1 sm:mt-0 sm:text-sm"
-                >
-                  Cancel
-                </button>
-              </div>
-            </form>
+            <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Name</label>
+            <input
+              type="text"
+              required
+              className={INPUT_CLS}
+              placeholder="e.g. Grilled Chicken"
+              value={form.name}
+              onChange={e => setForm(p => ({ ...p, name: e.target.value }))}
+            />
           </div>
-        </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Category</label>
+            <select
+              className={INPUT_CLS}
+              value={form.category}
+              onChange={e => setForm(p => ({ ...p, category: e.target.value }))}
+            >
+              <option>Food</option>
+              <option>Beverage</option>
+              <option>Dessert</option>
+              <option>Other</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Price (Rs)</label>
+            <input
+              type="number"
+              required
+              min="0"
+              step="1"
+              className={INPUT_CLS}
+              placeholder="0"
+              value={form.price}
+              onChange={e => setForm(p => ({ ...p, price: Number(e.target.value) }))}
+            />
+          </div>
+
+          <div className="flex gap-3 pt-2">
+            <button
+              type="submit"
+              disabled={saving}
+              className="flex-1 py-2.5 rounded-xl text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-60"
+              style={TEAL_BTN}
+            >
+              {saving ? 'Saving…' : (item ? 'Save Changes' : 'Add Item')}
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 py-2.5 rounded-xl border border-roameoBorder text-sm font-semibold text-slate-600 hover:bg-roameoSurface transition"
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   );
 };
 
-export const Menu: React.FC = () => {
-  const [items, setItems] = useState<MenuItem[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [showModal, setShowModal] = useState(false);
-  const [editingItem, setEditingItem] = useState<MenuItem | null>(null);
+// ─── Menu page ────────────────────────────────────────────────────────────────
 
-  useEffect(() => {
-    fetchItems();
-  }, []);
+export const Menu: React.FC = () => {
+  const [items, setItems]           = useState<MenuItem[]>([]);
+  const [loading, setLoading]       = useState(true);
+  const [showModal, setShowModal]   = useState(false);
+  const [editingItem, setEditingItem] = useState<MenuItem | null>(null);
+  const { toasts, showToast }       = useToast();
 
   const fetchItems = async () => {
     try {
@@ -142,136 +157,183 @@ export const Menu: React.FC = () => {
         .select('*')
         .order('category')
         .order('name');
-      
-      if (error) {
-        console.error(error);
-        setItems([]);
-        return;
-      }
-      if (!data) {
-        setItems([]);
-        return;
-      }
-      setItems(data);
-    } catch (error) {
-      console.error('Error fetching menu items:', error);
+      if (error) throw error;
+      setItems(data ?? []);
+    } catch (err) {
+      console.error('Error fetching menu items:', err);
+      showToast('Failed to load menu items', 'error');
       setItems([]);
     } finally {
       setLoading(false);
     }
   };
 
-  const handleDelete = async (id: string) => {
-    if (!window.confirm('Are you sure you want to delete this item?')) return;
-    
+  useEffect(() => { fetchItems(); }, []);
+
+  const grouped = useMemo(() => {
+    const map: Record<string, MenuItem[]> = {};
+    for (const item of items) {
+      if (!map[item.category]) map[item.category] = [];
+      map[item.category].push(item);
+    }
+    return map;
+  }, [items]);
+
+  const categories = Object.keys(grouped).sort();
+
+  const handleEdit = (item: MenuItem) => {
+    setEditingItem(item);
+    setShowModal(true);
+  };
+
+  const handleAdd = () => {
+    setEditingItem(null);
+    setShowModal(true);
+  };
+
+  const handleDelete = async (id: string, name: string) => {
+    if (!window.confirm(`Delete "${name}"?`)) return;
+    const prev = items;
+    setItems(p => p.filter(i => i.id !== id));
     try {
-      const { error } = await supabase
-        .from('menu_items')
-        .delete()
-        .eq('id', id);
-      
-      if (error) {
-        console.error(error);
-        return;
-      }
-      fetchItems();
-    } catch (error) {
-      console.error('Error deleting menu item:', error);
+      const { error } = await supabase.from('menu_items').delete().eq('id', id);
+      if (error) throw error;
+      showToast('Item deleted');
+    } catch (err) {
+      console.error('Error deleting menu item:', err);
+      setItems(prev);
+      showToast('Failed to delete item', 'error');
     }
   };
 
-  if (loading) return <div>Loading menu...</div>;
+  const handleSave = (msg: string) => {
+    setShowModal(false);
+    showToast(msg);
+    fetchItems();
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div
+          className="h-9 w-9 rounded-full border-2 border-roameoPrimary"
+          style={{ borderTopColor: 'transparent', animation: 'spin-ring 0.75s linear infinite' }}
+        />
+      </div>
+    );
+  }
 
   return (
-    <div>
-      <div className="sm:flex sm:items-center">
-        <div className="sm:flex-auto">
-          <h1 className="text-2xl font-semibold text-slate-900">Menu Items</h1>
-          <p className="mt-2 text-sm text-slate-700">
-            Manage food and beverage items available for room service.
-          </p>
+    <div className="space-y-6">
+      <ToastContainer toasts={toasts} />
+
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-800 tracking-tight">Menu Items</h1>
+          <p className="text-sm text-slate-500 mt-1">Manage room service food &amp; beverage items</p>
         </div>
-        <div className="mt-4 sm:mt-0 sm:ml-16 sm:flex-none">
-          <button
-            onClick={() => {
-              setEditingItem(null);
-              setShowModal(true);
-            }}
-            className="inline-flex items-center justify-center rounded-md border border-transparent bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 sm:w-auto"
-          >
-            <Plus className="-ml-1 mr-2 h-5 w-5" />
-            Add Item
-          </button>
-        </div>
+        <button
+          onClick={handleAdd}
+          className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-white transition hover:opacity-90"
+          style={TEAL_BTN}
+        >
+          <Plus className="h-4 w-4" />
+          Add Item
+        </button>
       </div>
 
-      <div className="mt-8 flex flex-col">
-        <div className="-my-2 -mx-4 overflow-x-auto sm:-mx-6 lg:-mx-8">
-          <div className="inline-block min-w-full py-2 align-middle md:px-6 lg:px-8">
-            <div className="overflow-hidden shadow ring-1 ring-black ring-opacity-5 md:rounded-lg">
-              <table className="min-w-full divide-y divide-slate-300">
-                <thead className="bg-slate-50">
-                  <tr>
-                    <th scope="col" className="py-3.5 pl-4 pr-3 text-left text-sm font-semibold text-slate-900 sm:pl-6">
-                      Name
-                    </th>
-                    <th scope="col" className="px-3 py-3.5 text-left text-sm font-semibold text-slate-900">
-                      Category
-                    </th>
-                    <th scope="col" className="px-3 py-3.5 text-left text-sm font-semibold text-slate-900">
-                      Price
-                    </th>
-                    <th scope="col" className="relative py-3.5 pl-3 pr-4 sm:pr-6">
-                      <span className="sr-only">Actions</span>
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-200 bg-white">
-                  {items && items.map((item) => (
-                    <tr key={item.id}>
-                      <td className="whitespace-nowrap py-4 pl-4 pr-3 text-sm font-medium text-slate-900 sm:pl-6">
-                        {item.name}
-                      </td>
-                      <td className="whitespace-nowrap px-3 py-4 text-sm text-slate-500">
-                        {item.category}
-                      </td>
-                      <td className="whitespace-nowrap px-3 py-4 text-sm text-slate-500">
-                        {formatCurrency(item.price)}
-                      </td>
-                      <td className="relative whitespace-nowrap py-4 pl-3 pr-4 text-right text-sm font-medium sm:pr-6">
-                        <button
-                          onClick={() => {
-                            setEditingItem(item);
-                            setShowModal(true);
-                          }}
-                          className="text-indigo-600 hover:text-indigo-900 mr-4"
-                        >
-                          <Edit className="h-4 w-4" />
-                        </button>
-                        <button
-                          onClick={() => handleDelete(item.id)}
-                          className="text-red-600 hover:text-red-900"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
+      {/* Empty state */}
+      {items.length === 0 && (
+        <div
+          className="flex flex-col items-center justify-center py-20 rounded-2xl"
+          style={{ background: '#F5F9FA', border: '1px solid rgba(212,230,234,0.6)' }}
+        >
+          <UtensilsCrossed className="h-12 w-12 text-roameoMuted mb-4" />
+          <p className="text-base font-semibold text-slate-600">No menu items yet</p>
+          <p className="text-sm text-slate-400 mt-1">Add your first item to get started</p>
+          <button
+            onClick={handleAdd}
+            className="mt-5 flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-white transition hover:opacity-90"
+            style={TEAL_BTN}
+          >
+            <Plus className="h-4 w-4" /> Add Item
+          </button>
         </div>
-      </div>
+      )}
+
+      {/* Grouped by category */}
+      {categories.map(cat => {
+        const style = categoryStyle(cat);
+        return (
+          <div
+            key={cat}
+            className="bg-white rounded-2xl overflow-hidden"
+            style={{ boxShadow: '0 1px 3px rgba(0,0,0,0.06), 0 4px 16px rgba(0,0,0,0.04)', border: '1px solid rgba(212,230,234,0.6)' }}
+          >
+            {/* Category header */}
+            <div className="flex items-center gap-3 px-6 py-4" style={{ borderBottom: '1px solid #F1F5F9' }}>
+              <span
+                className="h-2.5 w-2.5 rounded-full flex-shrink-0"
+                style={{ background: style.dot }}
+              />
+              <h2 className="text-sm font-semibold text-slate-700">{cat}</h2>
+              <span
+                className={`ml-auto text-xs font-semibold px-2 py-0.5 rounded-full ${style.bg} ${style.text}`}
+              >
+                {grouped[cat].length} {grouped[cat].length === 1 ? 'item' : 'items'}
+              </span>
+            </div>
+
+            {/* Items table */}
+            <table className="w-full">
+              <thead>
+                <tr style={{ borderBottom: '1px solid #F1F5F9' }}>
+                  <th className="text-left text-xs font-semibold text-slate-400 uppercase tracking-wide py-3 pl-6 pr-3">Name</th>
+                  <th className="text-right text-xs font-semibold text-slate-400 uppercase tracking-wide py-3 px-6">Price</th>
+                  <th className="py-3 pr-6 w-20" />
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-50">
+                {grouped[cat].map(item => (
+                  <tr key={item.id} className="group hover:bg-roameoSurface/60 transition">
+                    <td className="py-3.5 pl-6 pr-3">
+                      <span className="text-sm font-medium text-slate-800">{item.name}</span>
+                    </td>
+                    <td className="py-3.5 px-6 text-right">
+                      <span className="text-sm font-semibold text-roameoAccent">{formatCurrency(item.price)}</span>
+                    </td>
+                    <td className="py-3.5 pr-6">
+                      <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition">
+                        <button
+                          onClick={() => handleEdit(item)}
+                          className="p-1.5 rounded-lg hover:bg-roameoBorder/60 text-slate-500 hover:text-roameoAccent transition"
+                          title="Edit"
+                        >
+                          <Edit2 className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          onClick={() => handleDelete(item.id, item.name)}
+                          className="p-1.5 rounded-lg hover:bg-red-50 text-slate-500 hover:text-red-500 transition"
+                          title="Delete"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        );
+      })}
 
       {showModal && (
         <MenuModal
           item={editingItem}
           onClose={() => setShowModal(false)}
-          onSave={() => {
-            setShowModal(false);
-            fetchItems();
-          }}
+          onSave={handleSave}
         />
       )}
     </div>
