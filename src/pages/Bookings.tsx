@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { formatCurrency, generateBookingToken } from '../lib/utils';
-import { Plus, Edit, Trash2, CalendarDays, List, FileText, UtensilsCrossed, X, Minus } from 'lucide-react';
+import { Plus, Edit, Trash2, CalendarDays, List, FileText, UtensilsCrossed, X, Minus, Eye } from 'lucide-react';
 import { RoomAvailabilityGrid } from '../components/RoomAvailabilityGrid';
 import { BookingConfirmationCard, ReceiptBooking } from '../components/BookingConfirmationCard';
+import { FeedbackModal } from '../components/FeedbackModal';
 import { useToast } from '../hooks/useToast';
 import { ToastContainer } from '../components/ToastContainer';
 
@@ -508,6 +509,12 @@ export const Bookings: React.FC = () => {
   const [editingBooking, setEditingBooking] = useState<Booking | null>(null);
   const [viewingReceipt, setViewingReceipt] = useState<ReceiptBooking | null>(null);
   const [addMenuBookingId, setAddMenuBookingId] = useState<string | null>(null);
+  const [viewingProof, setViewingProof] = useState<{ url: string | null; guestName: string } | null>(null);
+  const [pendingFeedback, setPendingFeedback] = useState<{
+    bookingId: string;
+    newStatus: 'Completed' | 'Cancelled';
+    guestName: string;
+  } | null>(null);
   const { toasts, showToast } = useToast();
 
   useEffect(() => { fetchBookings(); fetchRooms(); }, []);
@@ -517,6 +524,7 @@ export const Bookings: React.FC = () => {
       const { data, error } = await supabase
         .from('bookings')
         .select(`*, rooms (id, room_number, room_type, price)`)
+        .in('status', ['Pending', 'Confirmed', 'Checked-in'])
         .order('created_at', { ascending: false });
       if (error) throw error;
       setBookings(data ?? []);
@@ -537,21 +545,32 @@ export const Bookings: React.FC = () => {
     }
   };
 
-  // ── Inline status change with optimistic update ───────────────────────────────
-  const handleStatusChange = async (id: string, newStatus: string) => {
-    // Optimistic update
+  // ── Inline status change with feedback intercept ─────────────────────────────
+  const handleStatusChange = (id: string, newStatus: string, guestName: string) => {
+    if (newStatus === 'Completed' || newStatus === 'Cancelled') {
+      setPendingFeedback({ bookingId: id, newStatus, guestName });
+      return;
+    }
     setBookings(prev => prev.map(b => b.id === id ? { ...b, status: newStatus } : b));
+    supabase.from('bookings').update({ status: newStatus }).eq('id', id)
+      .then(({ error }) => {
+        if (error) { fetchBookings(); showToast(error.message || 'Failed to update status', 'error'); }
+        else showToast('Status updated');
+      });
+  };
+
+  const commitPendingStatus = async () => {
+    if (!pendingFeedback) return;
+    const { bookingId, newStatus } = pendingFeedback;
     try {
-      const { error } = await supabase
-        .from('bookings')
-        .update({ status: newStatus })
-        .eq('id', id);
+      const { error } = await supabase.from('bookings').update({ status: newStatus }).eq('id', bookingId);
       if (error) throw error;
-      showToast('Status updated');
+      setBookings(prev => prev.filter(b => b.id !== bookingId));
+      showToast(`Booking ${newStatus.toLowerCase()}`);
     } catch (err: any) {
-      // Revert on failure
-      fetchBookings();
       showToast(err.message || 'Failed to update status', 'error');
+    } finally {
+      setPendingFeedback(null);
     }
   };
 
@@ -699,7 +718,7 @@ export const Bookings: React.FC = () => {
                         ) : (
                           <select
                             value={booking.status}
-                            onChange={e => handleStatusChange(booking.id, e.target.value)}
+                            onChange={e => handleStatusChange(booking.id, e.target.value, booking.guest_name)}
                             className={`text-xs font-semibold rounded-full px-2.5 py-1 border-0 outline-none cursor-pointer appearance-none transition-colors ${
                               STATUS_STYLES[booking.status] ?? 'bg-slate-100 text-slate-600'
                             }`}
@@ -718,6 +737,13 @@ export const Bookings: React.FC = () => {
                         className="text-roameoMuted hover:text-roameoAccent mr-3 transition-colors"
                       >
                         <FileText className="h-4 w-4" />
+                      </button>
+                      <button
+                        onClick={() => setViewingProof({ url: booking.payment_proof_url ?? null, guestName: booking.guest_name })}
+                        title="View Payment Proof"
+                        className={`mr-3 transition-colors ${booking.payment_proof_url ? 'text-roameoMuted hover:text-roameoAccent' : 'text-slate-200 hover:text-slate-400'}`}
+                      >
+                        <Eye className="h-4 w-4" />
                       </button>
                       <button
                         onClick={() => setAddMenuBookingId(booking.id)}
@@ -791,6 +817,63 @@ export const Bookings: React.FC = () => {
           bookingId={addMenuBookingId}
           onClose={() => { setAddMenuBookingId(null); fetchBookings(); }}
           showToast={showToast}
+        />
+      )}
+
+      {/* Payment proof modal */}
+      {viewingProof && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ background: 'rgba(15,23,42,0.55)', backdropFilter: 'blur(6px)' }}
+        >
+          <div
+            className="bg-white rounded-2xl w-full max-w-lg shadow-2xl"
+            style={{ border: '1px solid rgba(212,230,234,0.9)' }}
+          >
+            <div
+              className="flex items-center justify-between px-6 pt-6 pb-5"
+              style={{ borderBottom: '1px solid #F1F5F9' }}
+            >
+              <div>
+                <h3 className="text-[17px] font-bold text-slate-800 tracking-tight">Payment Proof</h3>
+                <p className="text-xs text-slate-400 mt-0.5">{viewingProof.guestName}</p>
+              </div>
+              <button
+                onClick={() => setViewingProof(null)}
+                className="h-8 w-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="px-6 py-5">
+              {viewingProof.url ? (
+                <img
+                  src={viewingProof.url}
+                  alt="Payment proof"
+                  className="w-full rounded-xl object-contain max-h-[420px] border border-roameoBorder"
+                />
+              ) : (
+                <div
+                  className="flex flex-col items-center justify-center py-12 rounded-xl"
+                  style={{ background: '#F5F9FA' }}
+                >
+                  <Eye className="h-8 w-8 text-slate-300 mb-3" />
+                  <p className="text-sm font-medium text-slate-500">No payment proof uploaded</p>
+                  <p className="text-xs text-slate-400 mt-1">The guest has not submitted a payment image yet.</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {pendingFeedback && (
+        <FeedbackModal
+          bookingId={pendingFeedback.bookingId}
+          type={pendingFeedback.newStatus === 'Completed' ? 'completed' : 'cancelled'}
+          guestName={pendingFeedback.guestName}
+          onSubmit={commitPendingStatus}
+          onSkip={commitPendingStatus}
         />
       )}
 

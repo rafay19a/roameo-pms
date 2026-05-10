@@ -200,14 +200,20 @@ const FIELD = 'w-full px-3.5 py-2.5 text-sm text-slate-800 bg-roameoSurface bord
 
 interface MaintenanceModalProps {
   room: RoomRow;
+  existing?: MaintenanceRecord | null;
   onClose: () => void;
   onSaved: () => void;
 }
 
-const MaintenanceModal: React.FC<MaintenanceModalProps> = ({ room, onClose, onSaved }) => {
+const MaintenanceModal: React.FC<MaintenanceModalProps> = ({ room, existing, onClose, onSaved }) => {
   const today = todayISO();
-  const [form, setForm] = useState({ start_date: today, end_date: today, note: '' });
+  const [form, setForm] = useState({
+    start_date: existing?.start_date ?? today,
+    end_date:   existing?.end_date   ?? today,
+    note:       existing?.note       ?? '',
+  });
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState('');
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -215,19 +221,47 @@ const MaintenanceModal: React.FC<MaintenanceModalProps> = ({ room, onClose, onSa
     if (form.end_date < form.start_date) { setError('End date must be on or after start date'); return; }
     setSaving(true);
     try {
-      const { error: err } = await supabase.from('room_maintenance').insert([{
-        room_id: room.id,
-        start_date: form.start_date,
-        end_date: form.end_date,
-        note: form.note.trim() || null,
-      }]);
-      if (err) throw err;
+      if (existing) {
+        const { error: err } = await supabase
+          .from('room_maintenance')
+          .update({
+            start_date: form.start_date,
+            end_date:   form.end_date,
+            note:       form.note.trim() || null,
+          })
+          .eq('id', existing.id);
+        if (err) throw err;
+      } else {
+        const { error: err } = await supabase.from('room_maintenance').insert([{
+          room_id:    room.id,
+          start_date: form.start_date,
+          end_date:   form.end_date,
+          note:       form.note.trim() || null,
+        }]);
+        if (err) throw err;
+      }
       onSaved();
     } catch (ex: any) {
       setError(ex.message ?? 'Failed to save maintenance record');
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleDelete = async () => {
+    if (!existing) return;
+    setDeleting(true);
+    const { error: err } = await supabase
+      .from('room_maintenance')
+      .delete()
+      .eq('id', existing.id);
+    if (err) {
+      console.error(err);
+      setError('Failed to delete');
+      setDeleting(false);
+      return;
+    }
+    onSaved();
   };
 
   return (
@@ -240,7 +274,7 @@ const MaintenanceModal: React.FC<MaintenanceModalProps> = ({ room, onClose, onSa
         <div className="flex items-center justify-between px-6 pt-6 pb-5" style={{ borderBottom: '1px solid #F1F5F9' }}>
           <div>
             <h3 className="text-[17px] font-bold text-slate-800 tracking-tight flex items-center gap-2">
-              <Wrench className="h-4 w-4 text-slate-500" /> Schedule Maintenance
+              <Wrench className="h-4 w-4 text-slate-500" /> {existing ? 'Edit Maintenance' : 'Schedule Maintenance'}
             </h3>
             <p className="text-xs text-slate-400 mt-0.5">Room {room.room_number} · {room.room_type}</p>
           </div>
@@ -269,9 +303,19 @@ const MaintenanceModal: React.FC<MaintenanceModalProps> = ({ room, onClose, onSa
             <input type="text" className={FIELD} placeholder="e.g. Plumbing repair" value={form.note} onChange={e => setForm(f => ({ ...f, note: e.target.value }))} />
           </div>
           <div className="flex gap-3 pt-1">
+            {existing && (
+              <button
+                type="button"
+                onClick={handleDelete}
+                disabled={deleting || saving}
+                className="px-4 py-2.5 text-sm font-semibold text-white bg-red-500 hover:bg-red-600 rounded-xl transition-colors disabled:opacity-60"
+              >
+                {deleting ? 'Deleting…' : 'Delete'}
+              </button>
+            )}
             <button type="button" onClick={onClose} className="flex-1 py-2.5 text-sm font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors">Cancel</button>
-            <button type="submit" disabled={saving} className="flex-1 py-2.5 text-sm font-semibold text-white rounded-xl transition-all disabled:opacity-60" style={{ background: 'linear-gradient(135deg, #6F8F97 0%, #4F6F76 100%)', boxShadow: '0 4px 14px rgba(79,111,118,0.30)' }}>
-              {saving ? 'Saving…' : 'Schedule'}
+            <button type="submit" disabled={saving || deleting} className="flex-1 py-2.5 text-sm font-semibold text-white rounded-xl transition-all disabled:opacity-60" style={{ background: 'linear-gradient(135deg, #6F8F97 0%, #4F6F76 100%)', boxShadow: '0 4px 14px rgba(79,111,118,0.30)' }}>
+              {saving ? 'Saving…' : (existing ? 'Update' : 'Schedule')}
             </button>
           </div>
         </form>
@@ -565,6 +609,7 @@ export const RoomAvailabilityGrid: React.FC = () => {
   const [maintenance, setMaintenance] = useState<MaintenanceRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [maintenanceRoom, setMaintenanceRoom] = useState<RoomRow | null>(null);
+  const [editingMaintenance, setEditingMaintenance] = useState<MaintenanceRecord | null>(null);
 
   // ── Drag state: both React state (for render) and a ref (for stale-closure-free touch handlers)
   const [drag, setDrag] = useState<DragState>({ active: false, roomId: null, startDate: null, endDate: null });
@@ -589,19 +634,40 @@ export const RoomAvailabilityGrid: React.FC = () => {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [{ data: rData }, { data: bData }, { data: mData }] = await Promise.all([
+      // Rooms and bookings are critical — fetch together
+      const [{ data: rData, error: rErr }, { data: bData, error: bErr }] = await Promise.all([
         supabase.from('rooms').select('id, room_number, room_type, price, status').order('room_number'),
-        supabase.from('bookings').select('id, room_id, guest_name, guest_phone, check_in, check_out, status').neq('status', 'Cancelled'),
-        supabase.from('room_maintenance').select('id, room_id, start_date, end_date, note').gte('end_date', today),
+        supabase.from('bookings')
+          .select('id, room_id, guest_name, guest_phone, check_in, check_out, status')
+          .not('status', 'in', '(Cancelled,Completed)'),
       ]);
+      if (rErr) console.error('Rooms fetch error:', rErr);
+      if (bErr) console.error('Bookings fetch error:', bErr);
       setRooms(rData ?? []);
       setBookings(bData ?? []);
+
+      // Maintenance is optional — a missing table must not break the grid
+      const { data: mData, error: mErr } = await supabase
+        .from('room_maintenance')
+        .select('id, room_id, start_date, end_date, note')
+        .gte('end_date', today);
+      if (mErr) console.warn('room_maintenance fetch skipped (table may not exist):', mErr.message);
+      console.log("BOOKINGS:", bData);
+      console.log("MAINTENANCE:", mData);
       setMaintenance(mData ?? []);
     } catch (e) {
       console.error('RoomAvailabilityGrid fetch error:', e);
     } finally {
       setLoading(false);
     }
+  };
+
+  const fetchAvailability = async () => {
+    const { data } = await supabase
+      .from('room_maintenance')
+      .select('*');
+
+    setMaintenance(data || []);
   };
 
   // ── Index bookings by room ────────────────────────────────────────────────────
@@ -626,9 +692,10 @@ export const RoomAvailabilityGrid: React.FC = () => {
       const rbs = bookingsByRoom[room.id] ?? [];
       const rms = maintenanceByRoom[room.id] ?? [];
       dates.forEach(date => {
-        if (room.status === 'Maintenance') { grid[room.id][date] = 'maintenance'; return; }
+        // Source of truth = bookings + room_maintenance only.
+        // room.status is NEVER consulted here — it is a UI-display column.
         if (rms.some(m => date >= m.start_date && date <= m.end_date)) { grid[room.id][date] = 'maintenance'; return; }
-        if (date < today)                  { grid[room.id][date] = 'past'; return; }
+        if (date < today)                                              { grid[room.id][date] = 'past'; return; }
 
         let status: BaseStatus = date === today ? 'today' : 'available';
         let isCheckout = false;
@@ -985,7 +1052,7 @@ export const RoomAvailabilityGrid: React.FC = () => {
                       </span>
                     </div>
                     <button
-                      onClick={() => setMaintenanceRoom(room)}
+                      onClick={() => { setEditingMaintenance(null); setMaintenanceRoom(room); }}
                       title="Schedule maintenance"
                       className="flex-shrink-0 h-6 w-6 rounded-md flex items-center justify-center text-slate-300 hover:text-slate-600 hover:bg-slate-100 transition-colors opacity-0 group-hover:opacity-100"
                     >
@@ -1031,7 +1098,20 @@ export const RoomAvailabilityGrid: React.FC = () => {
                           }
                         }}
                       >
-                        {CELL_LABELS[status] ?? ''}
+                        {status === 'maintenance' ? (() => {
+                          const maintenanceRecord = (maintenanceByRoom[room.id] ?? []).find(rec => date >= rec.start_date && date <= rec.end_date);
+                          return maintenanceRecord ? (
+                            <div
+                              onClick={() => {
+                                setEditingMaintenance(maintenanceRecord);
+                                setMaintenanceRoom(room);
+                              }}
+                              style={{ cursor: "pointer" }}
+                            >
+                              M
+                            </div>
+                          ) : 'M';
+                        })() : (CELL_LABELS[status] ?? '')}
                       </div>
                     );
                   })}
@@ -1076,8 +1156,9 @@ export const RoomAvailabilityGrid: React.FC = () => {
       {maintenanceRoom && (
         <MaintenanceModal
           room={maintenanceRoom}
-          onClose={() => setMaintenanceRoom(null)}
-          onSaved={() => { setMaintenanceRoom(null); fetchData(); }}
+          existing={editingMaintenance}
+          onClose={() => { setMaintenanceRoom(null); setEditingMaintenance(null); }}
+          onSaved={async () => { setMaintenanceRoom(null); setEditingMaintenance(null); await fetchAvailability(); }}
         />
       )}
     </div>

@@ -15,6 +15,7 @@ import { Rooms } from './pages/Rooms';
 import { Bookings } from './pages/Bookings';
 import { Invoices } from './pages/Invoices';
 import { Menu } from './pages/Menu';
+import { History } from './pages/History';
 import { Users } from './pages/Users';
 import { Settings } from './pages/Settings';
 
@@ -32,6 +33,7 @@ export default function App() {
               <Route path="/bookings" element={<Bookings />} />
               <Route path="/invoices" element={<Invoices />} />
               <Route path="/menu" element={<Menu />} />
+              <Route path="/history" element={<History />} />
               <Route path="/users" element={<Users />} />
               <Route path="/settings" element={<Settings />} />
             </Route>

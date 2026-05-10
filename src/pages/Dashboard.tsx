@@ -28,7 +28,7 @@ const statCards = (stats: Stats) => [
     iconColor: '#4F6F76',
   },
   {
-    label: 'Active Bookings',
+    label: 'Checked-In Rooms',
     value: stats.activeBookings.toString(),
     icon: CalendarCheck,
     iconBg: '#E6F6F4',
@@ -208,9 +208,7 @@ export const Dashboard: React.FC = () => {
         supabase
           .from('bookings')
           .select('*', { count: 'exact', head: true })
-          .gte('check_out', today)
-          .lte('check_in', today)
-          .neq('status', 'Cancelled'),
+          .eq('status', 'Checked-in'),
         supabase
           .from('invoices')
           .select('amount')

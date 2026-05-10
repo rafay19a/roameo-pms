@@ -10,6 +10,7 @@ import {
   Settings,
   LogOut,
   X,
+  Clock,
 } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 
@@ -17,6 +18,7 @@ const navItems = [
   { to: '/',         icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/rooms',    icon: BedDouble,       label: 'Rooms' },
   { to: '/bookings', icon: CalendarCheck,   label: 'Bookings' },
+  { to: '/history',  icon: Clock,           label: 'History' },
   { to: '/invoices', icon: FileText,        label: 'Invoices' },
   { to: '/menu',     icon: Utensils,        label: 'Menu' },
   { to: '/users',    icon: Users,           label: 'Users' },

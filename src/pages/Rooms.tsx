@@ -41,11 +41,18 @@ const RoomModal: React.FC<RoomModalProps> = ({ room, onClose, onSave, showToast 
       };
 
       if (room) {
-        const { error } = await supabase.from('rooms').update(roomData).eq('id', room.id);
+        console.log('[Rooms] Updating room status:', room.id, '→', roomData.status);
+        const { data, error } = await supabase
+          .from('rooms')
+          .update(roomData)
+          .eq('id', room.id)
+          .select();
+        console.log('[Rooms] DB response:', { data, error });
         if (error) throw error;
         showToast('Room updated successfully');
       } else {
-        const { error } = await supabase.from('rooms').insert([roomData]);
+        const { data, error } = await supabase.from('rooms').insert([roomData]).select();
+        console.log('[Rooms] insert response:', { data, error });
         if (error) throw error;
         showToast('Room added successfully');
       }
@@ -168,6 +175,7 @@ export const Rooms: React.FC = () => {
         .select('*')
         .order('room_number');
       if (error) throw error;
+      (data ?? []).forEach(room => console.log("ROOM STATUS FROM DB:", room.status));
       setRooms(data ?? []);
     } catch (err) {
       console.error('Error fetching rooms:', err);
@@ -261,7 +269,7 @@ export const Rooms: React.FC = () => {
                   </td>
                   <td className="whitespace-nowrap px-4 py-4 text-sm">
                     {(() => {
-                      const status = room.status === 'Available' ? 'Available' : 'Maintenance';
+                      const status = room.status;
                       return (
                         <span
                           className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ${
@@ -308,7 +316,7 @@ export const Rooms: React.FC = () => {
           room={editingRoom}
           onClose={() => setShowModal(false)}
           showToast={showToast}
-          onSave={() => { setShowModal(false); fetchRooms(); }}
+          onSave={async () => { setShowModal(false); await fetchRooms(); }}
         />
       )}
 
